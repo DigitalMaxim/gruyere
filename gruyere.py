@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 
 """Gruyere - a web application with holes.
 
@@ -34,6 +34,7 @@ import os
 import random
 import sys
 import threading
+import re
 import urllib.request, urllib.parse, urllib.error
 from urllib.parse import urlparse
 
@@ -62,7 +63,6 @@ SPECIAL_UNIQUE_ID = '_unique_id'
 COOKIE_UID = 'uid'
 COOKIE_ADMIN = 'is_admin'
 COOKIE_AUTHOR = 'is_author'
-
 
 # Set to True to cause the server to exit after processing the current url.
 quit_server = False
@@ -192,26 +192,38 @@ def _SaveDatabase(save_database):
     _Log('Couldn\'t save data')
 
 
+def sanitize_filename(filename):
+    """Sanitize the filename to prevent path traversal."""
+    # Remove any leading/trailing whitespace and ensure no path traversal sequences
+    filename = os.path.basename(filename.strip())
+    return filename
+
+
 def _Open(location, filename, mode='r'):
-  """Open a file from a specific location.
+    """Open a file from a specific location.
 
-  Args:
-    location: The directory containing the file.
-    filename: The name of the file.
-    mode: File mode for open().
+    Args:
+      location: The directory containing the file.
+      filename: The name of the file.
+      mode: File mode for open().
 
-  Returns:
-    A file object.
-  """
-  return open(location + filename, mode)
-
+    Returns:
+      A file object.
+    """
+    # Sanitize the filename to prevent path traversal
+    filename = sanitize_filename(filename)
+    # Ensure the location ends with a directory separator
+    if not location.endswith(os.path.sep):
+        location += os.path.sep
+    return open(location + filename, mode)
 
 class GruyereRequestHandler(BaseHTTPRequestHandler):
   """Handle a http request."""
 
   # An empty cookie
   NULL_COOKIE = {COOKIE_UID: None, COOKIE_ADMIN: False, COOKIE_AUTHOR: False}
-
+  ALLOWED_FILE_TYPES = {'image/jpeg', 'image/png'}
+  MAX_FILE_SIZE = 2 * 1024 * 1024  # 2 MB
   # Urls that can only be accessed by administrators.
   _PROTECTED_URLS = [
       '/quit',
@@ -396,6 +408,7 @@ class GruyereRequestHandler(BaseHTTPRequestHandler):
     profile_data = {}
     uid = self._GetParameter(params, 'uid', cookie[COOKIE_UID])
     newpw = self._GetParameter(params, 'pw')
+    
     self._AddParameter('name', params, profile_data, uid)
     self._AddParameter('pw', params, profile_data)
     self._AddParameter('is_author', params, profile_data)
@@ -414,10 +427,23 @@ class GruyereRequestHandler(BaseHTTPRequestHandler):
       if uid in database:
         message = 'User already exists.'
       else:
-        profile_data['pw'] = newpw
-        database[uid] = profile_data
-        (cookie, new_cookie_text) = self._CreateCookie('GRUYERE', uid)
-        message = 'Account created.'  # error message can also indicates success
+        message = None
+        if len(newpw) < 12:
+            message = 'Password must be at least 12 characters long and include uppercase letters, lowercase letters, digits, and special characters'
+        if not re.search(r'[A-Z]', newpw):  
+            message = 'Password must be at least 12 characters long and include uppercase letters, lowercase letters, digits, and special characters'
+        if not re.search(r'[a-z]', newpw):  
+            message = 'Password must be at least 12 characters long and include uppercase letters, lowercase letters, digits, and special characters'
+        if not re.search(r'[0-9]', newpw):  
+            message = 'Password must be at least 12 characters long and include uppercase letters, lowercase letters, digits, and special characters'  
+        if not re.search(r'[@$!%*?&]', newpw):  
+            message = 'Password must be at least 12 characters long and include uppercase letters, lowercase letters, digits, and special characters' 
+            
+        if message is None:
+            profile_data['pw'] = newpw
+            database[uid] = profile_data
+            (cookie, new_cookie_text) = self._CreateCookie('GRUYERE', uid)
+            message = 'Account created.'  # error message can also indicates success
     elif action == 'update':
       if uid not in database:
         message = 'User does not exist.'
@@ -548,7 +574,7 @@ class GruyereRequestHandler(BaseHTTPRequestHandler):
     The cookie is signed with a hash function.
     """
     if uid is None:
-      return (self.NULL_COOKIE, cookie_name + '=; path=/')
+      return (self.NULL_COOKIE, cookie_name + '=; path=/; HttpOnly')
     database = self._GetDatabase()
     profile = database[uid]
     if profile.get('is_author', False):
@@ -565,7 +591,7 @@ class GruyereRequestHandler(BaseHTTPRequestHandler):
 
     # global cookie_secret; only use positive hash values
     h_data = str(hash(cookie_secret + c_data) & 0x7FFFFFF)
-    c_text = '%s=%s|%s; path=/' % (cookie_name, h_data, c_data)
+    c_text = '%s=%s|%s; path=/; HttpOnly' % (cookie_name, h_data, c_data)
     return (c, c_text)
 
   def _GetCookie(self, cookie_name):
@@ -647,25 +673,34 @@ class GruyereRequestHandler(BaseHTTPRequestHandler):
       params: Cgi parameters. (unused)
     """
     (filename, file_data) = self._ExtractFileFromRequest()
+    filename = sanitize_filename(filename)  # Sanitize filename
     directory = self._MakeUserDirectory(cookie[COOKIE_UID])
 
     message = None
     url = None
-    try:
-      f = _Open(directory, filename, 'wb')
-      f.write(file_data)
-      f.close()
-      (host, port) = http_server.server_address
-      url = 'http://%s:%d/%s/%s/%s' % (
-          host, port, specials[SPECIAL_UNIQUE_ID], cookie[COOKIE_UID], filename)
-    except IOError as ex:
-      message = 'Couldn\'t write file %s: %s' % (filename, ex.message)
-      _Log(message)
+    
+    if not self._is_allowed_file_type(file_data):
+        message = 'File type not allowed. Only JPG and PNG files are allowed.'
+        _Log(message)
+    elif len(file_data) > self.MAX_FILE_SIZE:
+        message = 'File size exceeds the 2MB limit.'
+        _Log(message)
+    else:
+        try:
+          f = _Open(directory, filename, 'wb')
+          f.write(file_data)
+          f.close()
+          (host, port) = http_server.server_address
+          url = 'http://%s:%d/%s/%s/%s' % (
+              host, port, specials[SPECIAL_UNIQUE_ID], cookie[COOKIE_UID], filename)
+        except IOError as ex:
+          message = 'Couldn\'t write file %s: %s' % (filename, ex.message)
+          _Log(message)
 
-    specials['_message'] = message
-    self._SendTemplateResponse(
-        '/upload2.gtl', specials,
-        {'url': url})
+        specials['_message'] = message
+        self._SendTemplateResponse(
+            '/upload2.gtl', specials,
+            {'url': url})
 
   def _ExtractFileFromRequest(self):
     """Extracts the file from an upload request.
@@ -682,6 +717,20 @@ class GruyereRequestHandler(BaseHTTPRequestHandler):
     upload_file = form['upload_file']
     file_data = upload_file.file.read()
     return (upload_file.filename, file_data)
+     
+  def _is_allowed_file_type(self, file_data):
+    """Check if the file type is allowed.
+
+    Args:
+    file_data: The file data to check.
+
+    Returns:
+    True if the file type is allowed, False otherwise."""
+    import magic
+    
+    mime = magic.Magic(mime=True)
+    file_type = mime.from_buffer(file_data)
+    return file_type in self.ALLOWED_FILE_TYPES
 
   def _MakeUserDirectory(self, uid):
     """Creates a separate directory for each user to avoid upload conflicts.

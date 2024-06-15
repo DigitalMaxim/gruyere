@@ -20,6 +20,7 @@ __author__ = 'Bruce Leban'
 
 # system modules
 import re
+from html.parser import HTMLParser
 
 
 def SanitizeHtml(s):
@@ -59,12 +60,11 @@ def SanitizeHtml(s):
 
 TAG_RE = re.compile(r'<(.*?)(\s|>)')  # matches the start of an html tag
 
-
+  
 def _SanitizeTag(t):
-  """Sanitizes a single html tag.
+  """Sanitizes a single html tag to prevent XSS attacks.
 
-  This does both a 'whitelist' for
-  the allowed tags and a 'blacklist' for the disallowed attributes.
+  This function escapes potentially dangerous characters in the HTML tags and attributes.
 
   Args:
     t: a tag to sanitize.
@@ -76,14 +76,13 @@ def _SanitizeTag(t):
       'a', 'b', 'big', 'br', 'center', 'code', 'em', 'h1', 'h2', 'h3',
       'h4', 'h5', 'h6', 'hr', 'i', 'img', 'li', 'ol', 'p', 's', 'small',
       'span', 'strong', 'table', 'td', 'tr', 'u', 'ul',
-  ]
+  ]   
   disallowed_attributes = [
       'onblur', 'onchange', 'onclick', 'ondblclick', 'onfocus',
       'onkeydown', 'onkeypress', 'onkeyup', 'onload', 'onmousedown',
       'onmousemove', 'onmouseout', 'onmouseup', 'onreset',
-      'onselect', 'onsubmit', 'onunload'
+      'onselect', 'onsubmit', 'onunload', 'onerror'
   ]
-
   # Extract the tag name and make sure it's allowed.
   if t.startswith('</'):
     return t
@@ -94,8 +93,10 @@ def _SanitizeTag(t):
   if tag_name not in allowed_tags:
     t = t[:m.start(1)] + 'blocked' + t[m.end(1):]
 
-  # This is a bit heavy handed but we want to be sure we don't
-  # allow any to get through.
-  for a in disallowed_attributes:
-    t = t.replace(a, 'blocked')
+  # Escape potentially dangerous characters in the attributes.
+  t = t.replace('&', '&amp;')
+  t = t.replace('<', '&lt;')
+  t = t.replace('>', '&gt;')
+  t = t.replace('"', '&quot;')
+  t = t.replace("'", '&#x27;')  # This is to prevent HTML attribute injection
   return t

@@ -20,10 +20,9 @@ function _refresh(url, callback) {
   var httpRequest = window.XMLHttpRequest ? new XMLHttpRequest()
       : new ActiveXObject("Microsoft.XMLHTTP");
   httpRequest.onreadystatechange = function() {
-    if (httpRequest.readyState == 4) {
-      _feed = callback;
-      eval('(' + httpRequest.responseText + ')');
-      httpRequest = null;
+    if (httpRequest.readyState == 4 && httpRequest.status == 200) {
+      var response = JSON.parse(httpRequest.responseText);
+      callback(response);
     }
   }
   httpRequest.open("GET", url, true);
@@ -37,7 +36,7 @@ function _finishRefreshHome(response) {
   for (var uid in response) {
     var element = document.getElementById(uid);
     if (element) {
-      element.innerHTML = response[uid];
+      element.textContent = response[uid];
     }
   }
 };
@@ -53,14 +52,14 @@ function _finishRefreshSnippets(response) {
   var n = response.length;
   var element = document.getElementById('user_name');
   if (n && element) {
-    element.innerHTML = response[0];
+    element.textContent = response[0];
   }
 
   // The snippet divs are numbered 0, 1, ...
   for (var i = 1; i < n; ++i) {
     var element = document.getElementById(i - 1);
     if (element) {
-      element.innerHTML = response[i];
+      element.textContent = response[i];
     }
   }
 };
